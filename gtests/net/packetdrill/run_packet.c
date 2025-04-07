@@ -615,8 +615,10 @@ static int map_inbound_packet(
 	live_packet->mss = state->config->mss;
 
 	if (live_packet->psp != NULL) {
-		live_packet->psp->spi = htonl(ntohl(live_packet->psp->spi) +
-					      socket->psp_rx_spi_offset);
+		__be32 script_spi = live_packet->psp->spi;
+		if (psp_to_live_spi(state->psp, script_spi,
+				    &live_packet->psp->spi))
+			return STATUS_ERR;
 	}
 
 	if ((live_packet->icmpv4 != NULL) || (live_packet->icmpv6 != NULL))
