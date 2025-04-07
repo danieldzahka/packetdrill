@@ -18,4 +18,6 @@ lexer.c
 Makefile
 
 *.o
+*.a
+ynl-c/
 *~
