@@ -72,6 +72,7 @@ struct packet {
 	u32 buffer_bytes;	/* bytes of space in data buffer */
 	u32 l2_header_bytes;	/* bytes in outer hardware/layer-2 header */
 	u32 ip_bytes;		/* bytes in outermost IP hdrs/payload */
+	u32 psp_bytes;		/* from psp header start to end of PSP_TRL */
 	enum direction_t direction;	/* direction packet is traveling */
 
 	/* Metadata about all the headers in the packet, including all
@@ -337,7 +338,8 @@ static inline u8 *packet_end(const struct packet *packet)
 /* Return the length of the TCP/UDP payload. */
 static inline int packet_payload_len(const struct packet *packet)
 {
-	return packet_end(packet) - packet_payload(packet);
+	int psp_trl = packet->psp_bytes ? PSP_TRL_SIZE : 0;
+	return packet_end(packet) - packet_payload(packet) - psp_trl;
 }
 
 /* Return the location of the IP header echoed by an ICMP message. */

@@ -82,6 +82,7 @@ int psp_header_finish(struct packet *packet,
 	struct psp *psp = header->h.psp;
 
 	psp->next_header = header_type_info(next_inner->type)->ip_proto;
-	header->total_bytes = header->header_bytes + next_inner->total_bytes;
+	header->total_bytes = header->header_bytes + next_inner->total_bytes + PSP_TRL_SIZE;
+	packet->psp_bytes = header->total_bytes;
 	return STATUS_OK;
 }

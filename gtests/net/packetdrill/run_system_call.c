@@ -1651,6 +1651,72 @@ static int run_syscall_pipe(struct state *state, int *pfd_script, int *pfd_live,
  * we support...
  */
 
+/* not a real system call. Oh well. */
+static int syscall_rx_spi_alloc(struct state *state,
+				struct syscall_spec *syscall,
+				struct expression_list *args, char **error)
+{
+	int live_fd, script_fd, result;
+	u8 live_key[PSP_MAX_KEY];
+	__be32 live_rx_spi;
+	int script_rx_spi;
+
+	if (check_arg_count(args, 2, error))
+		return STATUS_ERR;
+	if (s32_arg(args, 0, &script_fd, error))
+		return STATUS_ERR;
+	if (to_live_fd(state, script_fd, &live_fd, error))
+		return STATUS_ERR;
+	if (s32_bracketed_arg(args, 1, &script_rx_spi, error))
+		return STATUS_ERR;
+	if (!state->psp_ynl)
+		return STATUS_ERR;
+	if (state->so_instance)
+		return STATUS_ERR;
+
+	begin_syscall(state, syscall);
+
+	result = psp_ynl_rx_spi_alloc(state->psp_ynl, live_fd, &live_rx_spi,
+				      live_key);
+
+	if (end_syscall(state, syscall, CHECK_EXACT, result, error))
+		return STATUS_ERR;
+
+	if (psp_state_add_spi(state->psp, htonl(script_rx_spi),
+			      htonl(live_rx_spi), live_key, PSP_V0_KEY))
+		return STATUS_ERR;
+
+	return STATUS_OK;
+}
+
+static int syscall_tx_spi_set(struct state *state, struct syscall_spec *syscall,
+			      struct expression_list *args, char **error)
+{
+	int live_fd, script_fd, result, script_tx_spi;
+
+	if (check_arg_count(args, 2, error))
+		return STATUS_ERR;
+	if (s32_arg(args, 0, &script_fd, error))
+		return STATUS_ERR;
+	if (to_live_fd(state, script_fd, &live_fd, error))
+		return STATUS_ERR;
+	if (s32_arg(args, 1, &script_tx_spi, error))
+		return STATUS_ERR;
+	if (!state->psp_ynl)
+		return STATUS_ERR;
+	if (state->so_instance)
+		return STATUS_ERR;
+
+	begin_syscall(state, syscall);
+
+	result = psp_ynl_tx_spi_set(state->psp_ynl, live_fd, script_tx_spi);
+
+	if (end_syscall(state, syscall, CHECK_EXACT, result, error))
+		return STATUS_ERR;
+
+	return STATUS_OK;
+}
+
 static int syscall_socket(struct state *state, struct syscall_spec *syscall,
 			  struct expression_list *args, char **error)
 {
@@ -3361,6 +3427,8 @@ struct system_call_entry system_call_table[] = {
 	{"epoll_wait",   syscall_epoll_wait},
 	{"pipe",         syscall_pipe},
 	{"splice",       syscall_splice},
+	{"nl_rx_spi_alloc", syscall_rx_spi_alloc},
+	{"nl_tx_spi_set", syscall_tx_spi_set},
 };
 
 /* Evaluate the system call arguments and invoke the system call. */

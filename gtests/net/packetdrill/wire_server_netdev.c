@@ -133,6 +133,8 @@ static void wire_server_netdev_drop_test_traffic(const struct config *config)
 		 "%s -I INPUT -s %s -p udp -m udp --dport %u -j DROP; "
 		 /* drop UDP from bind port: */
 		 "%s -I INPUT -s %s -p udp -m udp --sport %u -j DROP; "
+		 /* drop UDP to psp port: */
+		 "%s -I INPUT -s %s -p udp -m udp --dport %u -j DROP; "
 		 ") > /dev/null 2>&1",
 		 /* TCP: */
 		 iptables(config),
@@ -143,7 +145,9 @@ static void wire_server_netdev_drop_test_traffic(const struct config *config)
 		 iptables(config),
 		 config->live_local_ip_string, config->live_connect_port,
 		 iptables(config),
-		 config->live_local_ip_string, config->live_bind_port);
+		 config->live_local_ip_string, config->live_bind_port,
+		 iptables(config),
+		 config->live_local_ip_string, config->psp_udp_port);
 	/* For now, intentionally ignoring errors. TODO: clean up. */
 	system(command);
 	free(command);
@@ -166,6 +170,8 @@ static void wire_server_netdev_permit_test_traffic(const struct config *config)
 		 "%s -D INPUT -s %s -p udp -m udp --dport %u -j DROP; "
 		 /* UDP from bind port: */
 		 "%s -D INPUT -s %s -p udp -m udp --sport %u -j DROP; "
+		 /* UDP from bind port: */
+		 "%s -D INPUT -s %s -p udp -m udp --dport %u -j DROP; "
 		 ") > /dev/null 2>&1",
 		 /* TCP: */
 		 iptables(config),
@@ -176,7 +182,9 @@ static void wire_server_netdev_permit_test_traffic(const struct config *config)
 		 iptables(config),
 		 config->live_local_ip_string, config->live_connect_port,
 		 iptables(config),
-		 config->live_local_ip_string, config->live_bind_port);
+		 config->live_local_ip_string, config->live_bind_port,
+		 iptables(config),
+		 config->live_local_ip_string, config->psp_udp_port);
 	/* For now, intentionally ignoring errors. TODO: clean up. */
 	system(command);
 	free(command);

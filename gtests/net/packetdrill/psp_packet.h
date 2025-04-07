@@ -44,7 +44,7 @@ static inline bool is_psp_transport_encap(const struct packet *packet)
  */
 static inline unsigned int psp_encap_header_bytes(const struct psp *psp)
 {
-	return psp == NULL ? 0 : sizeof(struct udp) + psp_len(psp);
+	return psp == NULL ? 0 : sizeof(struct udp) + psp_len(psp) + PSP_TRL_SIZE;
 }
 
 /* PSP-encapsulate the given packet by appending a UDP and a PSP header to it.

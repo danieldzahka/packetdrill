@@ -1,6 +1,20 @@
 all: binaries
 
 CFLAGS = -g -Wall -Werror
+CFLAGS += -I./ynl-c/generated/ -I./ynl-c/include/ynl-c/ -I./ynl-c/include
+
+GIT_REPO_URL = https://github.com/linux-netdev/ynl-c.git
+ynl-c:
+	@if [ ! -d "$@" ]; then \
+                $(if ${KSRC},,$(error KSRC must be provided for netlink uapi, e.g. "make KSRC=/path/to/ksrc")) \
+		echo "Cloning $(GIT_REPO_URL) into $@"; \
+		git clone $(GIT_REPO_URL) "$@"; \
+		cd $@ && git checkout de557a12b608e24c5 && ./update-from-kernel.sh $(KSRC); \
+	fi
+
+libynl.a: ynl-c
+	make -C ynl-c
+	cp ynl-c/libynl.a .
 
 parser.o: parser.y
 	bison --output=parser.c --defines=parser.h --report=state parser.y
@@ -29,12 +43,14 @@ packetdrill-lib := \
          link_layer.o wire_conn.o wire_protocol.o \
          wire_client.o wire_client_netdev.o \
          wire_server.o wire_server_netdev.o \
-	 epoll.o pipe.o file.o so_testing.o wrap.o
+	 epoll.o pipe.o file.o so_testing.o wrap.o \
+         psp-ynl.o psp_state.o psp_crypto.o
 
 packetdrill-objs := packetdrill.o $(packetdrill-lib)
+$(packetdrill-objs): ynl-c
 
-packetdrill: $(packetdrill-objs)
-	$(CC) -o packetdrill -g $(packetdrill-objs) $(packetdrill-ext-libs)
+packetdrill: $(packetdrill-objs) libynl.a
+	$(CC) -o packetdrill -g $(packetdrill-objs) libynl.a $(packetdrill-ext-libs)
 
 test-bins := checksum_test packet_parser_test packet_to_string_test
 tests: $(test-bins)
@@ -45,19 +61,19 @@ tests: $(test-bins)
 binaries: packetdrill $(test-bins)
 
 checksum_test-objs := $(packetdrill-lib) checksum_test.o
-checksum_test: $(checksum_test-objs)
-	$(CC) -o checksum_test $(checksum_test-objs) $(packetdrill-ext-libs)
+checksum_test: $(checksum_test-objs) libynl.a
+	$(CC) -o checksum_test $(checksum_test-objs) libynl.a $(packetdrill-ext-libs)
 
 packet_parser_test-objs := $(packetdrill-lib) packet_parser_test.o
-packet_parser_test: $(packet_parser_test-objs)
+packet_parser_test: $(packet_parser_test-objs) libynl.a
 	$(CC) -o packet_parser_test $(packet_parser_test-objs) \
-                $(packetdrill-ext-libs)
+                libynl.a $(packetdrill-ext-libs)
 
 packet_to_string_test-objs := $(packetdrill-lib) packet_to_string_test.o
-packet_to_string_test: $(packet_to_string_test-objs)
+packet_to_string_test: $(packet_to_string_test-objs) libynl.a
 	$(CC) -o packet_to_string_test $(packet_to_string_test-objs) \
-                $(packetdrill-ext-libs)
+                libynl.a $(packetdrill-ext-libs)
 
 clean:
 	/bin/rm -f *.o packetdrill lexer.c parser.c parser.h parser.output \
-                $(test-bins)
+                $(test-bins) libynl.a

@@ -49,6 +49,8 @@
 #include "system.h"
 #include "tcp.h"
 #include "tcp_options.h"
+#include "psp-ynl.h"
+#include "psp_state.h"
 
 /* MAX_SPIN_USECS is the maximum amount of time (in microseconds) to
  * spin waiting for an event. We sleep up until this many microseconds
@@ -75,7 +77,8 @@ const char *script_path;
 
 struct state *state_new(struct config *config,
 			struct script *script,
-			struct netdev *netdev)
+			struct netdev *netdev,
+			bool enable_psp)
 {
 	struct state *state = calloc(1, sizeof(struct state));
 
@@ -92,6 +95,8 @@ struct state *state_new(struct config *config,
 	state->code = code_new(config);
 	state->fds = NULL;
 	state->num_events = 0;
+	state->psp_ynl = psp_ynl_new(enable_psp);
+	state->psp = psp_state_new();
 	return state;
 }
 
@@ -135,6 +140,8 @@ void state_free(struct state *state)
 	netdev_free(state->netdev);
 	packets_free(state->packets);
 	code_free(state->code);
+	psp_state_free(state->psp);
+	psp_ynl_free(state->psp_ynl);
 
 	if (state->wire_client)
 		wire_client_free(state->wire_client);
@@ -559,6 +566,7 @@ void run_script(struct config *config, struct script *script)
 	struct state *state = NULL;
 	struct netdev *netdev = NULL;
 	struct event *event = NULL;
+	bool enable_psp = true;
 
 	DEBUGP("run_script: running script\n");
 
@@ -580,7 +588,7 @@ void run_script(struct config *config, struct script *script)
 	else
 		netdev = local_netdev_new(config);
 
-	state = state_new(config, script, netdev);
+	state = state_new(config, script, netdev, enable_psp);
 
 	if (config->is_wire_client) {
 		state->wire_client = wire_client_new();
@@ -621,7 +629,8 @@ void run_script(struct config *config, struct script *script)
 			break;
 
 		if (state->wire_client != NULL)
-			wire_client_next_event(state->wire_client, event);
+			wire_client_next_event(state->wire_client, event,
+					       state->psp);
 
 		/* In wire mode, we adjust relative times after
 		 * getting notification that previous packet events
@@ -660,7 +669,7 @@ void run_script(struct config *config, struct script *script)
 
 	/* Wait for any outstanding packet events we requested on the server. */
 	if (state->wire_client != NULL)
-		wire_client_next_event(state->wire_client, NULL);
+		wire_client_next_event(state->wire_client, NULL, state->psp);
 
 	if (run_cleanup_command() == STATUS_ERR)
 		exit(EXIT_FAILURE);

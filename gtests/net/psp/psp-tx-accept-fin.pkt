@@ -1,0 +1,35 @@
+// Accept a pure FIN from PSP-TX state
+
+--ip_version=ipv6
+--psp_udp_port=1000
+
+// Initialize connection
+0.000 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
+   +0 setsockopt(3, SOL_SOCKET, SO_REUSEADDR, [1], 4) = 0
+   +0 bind(3, ..., ...) = 0
+   +0 listen(3, 1) = 0
+
+   +.1 < S 0:0(0) win 50000 <mss 1000,nop,wscale 0>
+   +0 > S. 0:0(0) ack 1 <mss 1440,nop,wscale 11>
+   +0 < . 1:1(0) ack 1 win 50000
+   +0 accept(3, ..., ...) = 4
+
+// cleartext tcp
++0 send(4, ..., 500, 0) = 500
++0 > P. 1:501(500) ack 1
++0 <  . 1:1(0) ack 501 win 50000
+
++0.1 < P. 1:501(500) ack 501 win 50000
+  +0 >  . 501:501(0) ack 501
+  +0 recv(4, ..., 1000, 0) = 500
+
+// upgrade to psp
++0 nl_rx_spi_alloc(4, [7]) = 0
++0 nl_tx_spi_set(4, 23) = 0
+
+  +0 < F. 501:501(0) ack 501 win 50000
++0.04 > encap psp spi 23 . 501:501(0) ack 502
+
+ +0 close(4) = 0
+ +0 > encap psp spi 23 F. 501:501(0) ack 502
++.1 < . 502:502(0) ack 502 win 50000

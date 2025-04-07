@@ -329,6 +329,8 @@ static int wire_server_receive_packets_start(struct wire_server *wire_server)
 		return STATUS_ERR;
 	}
 
+	memcpy(wire_server->state->psp, &start.psp, sizeof(start.psp));
+
 	return STATUS_OK;
 }
 
@@ -496,6 +498,7 @@ static void *wire_server_thread(void *arg)
 {
 	struct wire_server *wire_server = (struct wire_server *)arg;
 	struct netdev *netdev = NULL;
+	bool enable_psp = false;
 	char *error = NULL;
 
 	DEBUGP("wire_server_thread\n");
@@ -541,8 +544,8 @@ static void *wire_server_thread(void *arg)
 				 &wire_server->server_ether_addr);
 
 	wire_server->state = state_new(&wire_server->config,
-					       &wire_server->script,
-					       netdev);
+				       &wire_server->script,
+				       netdev, enable_psp);
 
 	if (wire_server_send_server_ready(wire_server))
 		goto error_done;

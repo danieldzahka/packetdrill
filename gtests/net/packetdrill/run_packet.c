@@ -46,6 +46,7 @@
 #include "tcp_options_to_string.h"
 #include "tcp_packet.h"
 #include "wrap.h"
+#include "psp_crypto.h"
 
 /* To avoid issues with TIME_WAIT, FIN_WAIT1, and FIN_WAIT2 we use
  * dynamically-chosen, unique 4-tuples for each test. We implement the
@@ -613,11 +614,6 @@ static int map_inbound_packet(
 	}
 
 	live_packet->mss = state->config->mss;
-
-	if (live_packet->psp != NULL) {
-		live_packet->psp->spi = htonl(ntohl(live_packet->psp->spi) +
-					      socket->psp_rx_spi_offset);
-	}
 
 	if ((live_packet->icmpv4 != NULL) || (live_packet->icmpv6 != NULL))
 		return map_inbound_icmp_packet(socket, live_packet, error);
@@ -1960,9 +1956,10 @@ out:
 }
 
 /* Checksum the packet and inject it into the kernel under test. */
-static int send_live_ip_packet(struct netdev *netdev,
-			       struct packet *packet)
+static int send_live_ip_packet(struct state *state, struct packet *packet)
 {
+	u8 live_key[PSP_MAX_KEY];
+
 	assert(packet->ip_bytes > 0);
 	/* We do IPv4 and IPv6 */
 	assert(packet->ipv4 || packet->ipv6);
@@ -1972,7 +1969,17 @@ static int send_live_ip_packet(struct netdev *netdev,
 	/* Fill in layer 3 and layer 4 checksums */
 	checksum_packet(packet);
 
-	return netdev_send(netdev, packet);
+	if (packet->psp != NULL) {
+		__be32 script_spi = packet->psp->spi;
+		if (psp_to_live_spi(state->psp, script_spi, &packet->psp->spi,
+				    live_key, PSP_V0_KEY))
+			return STATUS_ERR;
+
+		if (psp_encrypt(packet->psp, packet->psp_bytes, live_key))
+			return STATUS_ERR;
+	}
+
+	return netdev_send(state->netdev, packet);
 }
 
 /* Perform the action implied by an inbound packet in a script */
@@ -2028,7 +2035,7 @@ static int do_inbound_script_packet(
 	}
 
 	/* Inject live packet into kernel. */
-	result = send_live_ip_packet(state->netdev, live_packet);
+	result = send_live_ip_packet(state, live_packet);
 
 out:
 	packet_free(live_packet);
@@ -2128,6 +2135,7 @@ int reset_connection(struct state *state, struct socket *socket)
 		ack_seq = ntohl(socket->last_outbound_tcp_header.seq) + 1;
 	}
 
+	// TODO: psp encapsulate reset packet???
 	packet = new_tcp_packet(socket->address_family,
 				DIRECTION_INBOUND, ip_info, NULL, 0, 0, 0,
 				"R.", seq, 0, ack_seq, window, 0, NULL,
@@ -2140,7 +2148,7 @@ int reset_connection(struct state *state, struct socket *socket)
 	set_packet_tuple(packet, &live_inbound);
 
 	/* Inject live packet into kernel. */
-	result = send_live_ip_packet(state->netdev, packet);
+	result = send_live_ip_packet(state, packet);
 
 	packet_free(packet);
 

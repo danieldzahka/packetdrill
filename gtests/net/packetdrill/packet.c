@@ -166,6 +166,7 @@ static void packet_duplicate_info(struct packet *packet,
 	packet->time_usecs	= old_packet->time_usecs;
 	packet->flags		= old_packet->flags;
 	packet->tos_chk		= old_packet->tos_chk;
+	packet->psp_bytes	= old_packet->psp_bytes;
 
 	packet_copy_headers(packet, old_packet, bytes_headroom);
 

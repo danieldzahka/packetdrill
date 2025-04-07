@@ -32,8 +32,13 @@
 #define __PSP_HEADERS_H__
 
 #include "types.h"
+#include <stdlib.h>
 
-#define PSP_MINLEN 16
+#define PSP_V0_KEY	16
+#define PSP_V1_KEY	32
+#define PSP_MAX_KEY	32
+#define PSP_TRL_SIZE	16
+#define PSP_MINLEN	16
 
 struct psp {
 	__u8	next_header;
