@@ -1051,7 +1051,7 @@ psp_header_info
 	$$ = psp_new();
 	$$->flags = 1;
 	$$->ext_len = 1;
-	$$->crypt_offset = 1;
+	$$->crypt_offset = 0;
 	if ($2.supplied) {
 		$$->has_vc = 1;
 		$$->vc = htobe64($2.value);
