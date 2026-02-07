@@ -36,6 +36,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <poll.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -64,7 +65,9 @@ struct local_netdev {
 	int tun_fd;		/* tun for sending/receiving packets */
 	int control_fd;		/* fd for configuration of tun interface */
 	int index;		/* interface index from if_nametoindex */
-	struct packet_socket *psock;	/* for sniffing packets (owned) */
+#ifdef linux
+	bool has_vnet_hdr;	/* whether IFF_VNET_HDR is enabled */
+#endif
 };
 
 struct netdev_ops local_netdev_ops;
@@ -146,8 +149,24 @@ loop:
 	memset(&ifr, 0, sizeof(ifr));
 	ifr.ifr_flags = IFF_TUN | IFF_NO_PI | IFF_VNET_HDR;
 	int status = ioctl(netdev->tun_fd, TUNSETIFF, (void *)&ifr);
-	if (status < 0)
-		die_perror("TUNSETIFF");
+	if (status < 0) {
+		/* Kernel may not support IFF_VNET_HDR; reopen and
+		 * retry without it.
+		 */
+		close(tun_fd);
+		tun_fd = open(TUN_PATH, O_RDWR);
+		if (tun_fd < 0)
+			die_perror("open tun device");
+		netdev->tun_fd = tun_fd;
+		memset(&ifr, 0, sizeof(ifr));
+		ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
+		status = ioctl(netdev->tun_fd, TUNSETIFF, (void *)&ifr);
+		if (status < 0)
+			die_perror("TUNSETIFF");
+		netdev->has_vnet_hdr = false;
+	} else {
+		netdev->has_vnet_hdr = true;
+	}
 
 	/* Our tests rely on using tun0.
 	 * We might change this in the future, by passing a variable filled
@@ -222,10 +241,12 @@ loop:
 static void set_device_offload_flags(struct local_netdev *netdev)
 {
 #ifdef linux
-	const u32 offload =
-	    TUN_F_CSUM | TUN_F_TSO4 | TUN_F_TSO6 | TUN_F_TSO_ECN;
-	if (ioctl(netdev->tun_fd, TUNSETOFFLOAD, offload) != 0)
-		die_perror("TUNSETOFFLOAD");
+	if (netdev->has_vnet_hdr) {
+		const u32 offload =
+		    TUN_F_CSUM | TUN_F_TSO4 | TUN_F_TSO6 | TUN_F_TSO_ECN;
+		if (ioctl(netdev->tun_fd, TUNSETOFFLOAD, offload) != 0)
+			die_perror("TUNSETOFFLOAD");
+	}
 #endif
 }
 
@@ -314,7 +335,6 @@ struct netdev *local_netdev_new(struct config *config)
 				      config->live_prefix_len);
 
 	route_traffic_to_device(config, netdev);
-	netdev->psock = packet_socket_new(netdev->name);
 
 	return (struct netdev *)netdev;
 }
@@ -323,8 +343,6 @@ static void local_netdev_free(struct netdev *a_netdev)
 {
 	struct local_netdev *netdev = to_local_netdev(a_netdev);
 
-	if (netdev->psock)
-		packet_socket_free(netdev->psock);
 	if (netdev->tun_fd >= 0)
 		close(netdev->tun_fd);
 	if (netdev->control_fd >= 0)
@@ -364,21 +382,27 @@ static void bsd_tun_write(struct local_netdev *netdev,
 static void linux_tun_write(struct local_netdev *netdev,
 			    struct packet *packet)
 {
-	struct virtio_net_hdr gso = { 0 };
-	struct iovec vector[2] = {
-		{ &gso, sizeof(gso) },
-		{ packet_start(packet), packet->ip_bytes }
-	};
+	if (netdev->has_vnet_hdr) {
+		struct virtio_net_hdr gso = { 0 };
+		struct iovec vector[2] = {
+			{ &gso, sizeof(gso) },
+			{ packet_start(packet), packet->ip_bytes }
+		};
 
-	if (packet->tcp && packet->mss) {
-		if (packet->ipv4)
-			gso.gso_type = VIRTIO_NET_HDR_GSO_TCPV4;
-		else
-			gso.gso_type = VIRTIO_NET_HDR_GSO_TCPV6;
-		gso.gso_size = packet->mss;
+		if (packet->tcp && packet->mss) {
+			if (packet->ipv4)
+				gso.gso_type = VIRTIO_NET_HDR_GSO_TCPV4;
+			else
+				gso.gso_type = VIRTIO_NET_HDR_GSO_TCPV6;
+			gso.gso_size = packet->mss;
+		}
+		if (writev(netdev->tun_fd, vector, ARRAY_SIZE(vector)) < 0)
+			die_perror("Linux tun write()");
+	} else {
+		if (write(netdev->tun_fd, packet_start(packet),
+			  packet->ip_bytes) < 0)
+			die_perror("Linux tun write()");
 	}
-	if (writev(netdev->tun_fd, vector, ARRAY_SIZE(vector)) < 0)
-		die_perror("Linux tun write()");
 }
 #endif  /* linux */
 
@@ -406,55 +430,126 @@ static int local_netdev_send(struct netdev *a_netdev,
 	return STATUS_OK;
 }
 
-/* Read the given number of packets out of the tun device. We read
- * these packets so that the kernel can exercise its normal code paths
- * for packet transmit completion, since this code path may feed back
- * to TCP behavior; e.g., see the Linux patch "tcp: avoid retransmits
- * of TCP packets hanging in host queues".  We don't need to actually
- * need the packet contents, but on Linux we need to read at least 1
- * byte of packet data to consume the packet.
- * After we added IFF_VNET_HDR attribute to the linux tun device,
- * we expect to receive a virtio_net_hdr at the beginning.
- */
-static void local_netdev_read_queue(struct local_netdev *netdev,
-				    int num_packets)
-{
-#ifdef linux
-	char buf[sizeof(struct virtio_net_hdr) + 1];
-#else
-	char buf[1];
-#endif
-	int i = 0, in_bytes = 0;
-
-	for (i = 0; i < num_packets; ++i) {
-		in_bytes = read(netdev->tun_fd, buf, sizeof(buf));
-		assert(in_bytes <= (int)sizeof(buf));
-
-		if (in_bytes < 0) {
-			if (errno == EINTR)
-				continue;
-			else
-				die_perror("tun read()");
-		}
-       }
-}
-
 static int local_netdev_receive(struct netdev *a_netdev, s32 timeout_secs,
 				struct packet **packet, char **error)
 {
 	struct local_netdev *netdev = to_local_netdev(a_netdev);
-	int status = STATUS_ERR;
-	int num_packets = 0;
 
 	DEBUGP("local_netdev_receive\n");
 
-	status = netdev_receive_loop(netdev->psock, PACKET_LAYER_3_IP,
-				     DIRECTION_OUTBOUND, timeout_secs, packet,
-				     &num_packets, error);
-	if (status == STATUS_TIMEOUT)
-		return STATUS_TIMEOUT;
-	local_netdev_read_queue(netdev, num_packets);
-	return status;
+	assert(*packet == NULL);	/* should be no packet yet */
+
+	while (1) {
+		int in_bytes = 0;
+		enum packet_parse_result_t result;
+
+		/* Wait for data on the tun fd, with timeout. */
+		int timeout_ms = (timeout_secs == TIMEOUT_NONE) ?
+				 -1 : timeout_secs * 1000;
+		struct pollfd pfd = {
+			.fd = netdev->tun_fd,
+			.events = POLLIN,
+		};
+		int ret = poll(&pfd, 1, timeout_ms);
+		if (ret == 0) {
+			asprintf(error, "Timed out waiting for packet");
+			return STATUS_TIMEOUT;
+		}
+		if (ret < 0) {
+			if (errno == EINTR)
+				continue;
+			die_perror("poll on tun fd");
+		}
+
+		*packet = packet_new(PACKET_READ_BYTES);
+
+#ifdef linux
+		if (netdev->has_vnet_hdr) {
+			/* With IFF_VNET_HDR, each read from the tun fd
+			 * is prefixed with a struct virtio_net_hdr.
+			 */
+			struct virtio_net_hdr vnet_hdr;
+			struct iovec iov[2] = {
+				{ &vnet_hdr, sizeof(vnet_hdr) },
+				{ (*packet)->buffer, (*packet)->buffer_bytes }
+			};
+			int total_bytes = readv(netdev->tun_fd, iov, 2);
+			if (total_bytes < 0) {
+				if (errno == EINTR) {
+					packet_free(*packet);
+					*packet = NULL;
+					continue;
+				}
+				die_perror("tun readv()");
+			}
+			in_bytes = total_bytes - (int)sizeof(vnet_hdr);
+			if (in_bytes < 0)
+				in_bytes = 0;
+		} else {
+			/* Without IFF_VNET_HDR, read raw IP packets. */
+			in_bytes = read(netdev->tun_fd, (*packet)->buffer,
+					(*packet)->buffer_bytes);
+			if (in_bytes < 0) {
+				if (errno == EINTR) {
+					packet_free(*packet);
+					*packet = NULL;
+					continue;
+				}
+				die_perror("tun read()");
+			}
+		}
+#else
+		/* On BSD, each read from the tun fd is prefixed with a
+		 * 4-byte address family header.
+		 */
+		u32 af_header;
+		struct iovec iov[2] = {
+			{ &af_header, sizeof(af_header) },
+			{ (*packet)->buffer, (*packet)->buffer_bytes }
+		};
+		int total_bytes = readv(netdev->tun_fd, iov, 2);
+		if (total_bytes < 0) {
+			if (errno == EINTR) {
+				packet_free(*packet);
+				*packet = NULL;
+				continue;
+			}
+			die_perror("tun readv()");
+		}
+		in_bytes = total_bytes - (int)sizeof(af_header);
+		if (in_bytes < 0)
+			in_bytes = 0;
+#endif
+
+		/* Timestamp the packet. The tun device does not provide
+		 * kernel timestamps, so we use gettimeofday.
+		 */
+		struct timeval tv;
+		if (gettimeofday(&tv, NULL) < 0)
+			die_perror("gettimeofday");
+		(*packet)->time_usecs = timeval_to_usecs(&tv);
+		DEBUGP("tun read packet at %u.%u = %lld\n",
+		       (u32)tv.tv_sec, (u32)tv.tv_usec,
+		       (*packet)->time_usecs);
+
+		result = parse_packet(*packet, in_bytes,
+				      PACKET_LAYER_3_IP, error);
+
+		if (result == PACKET_OK)
+			return STATUS_OK;
+
+		packet_free(*packet);
+		*packet = NULL;
+
+		if (result == PACKET_BAD)
+			return STATUS_ERR;
+
+		DEBUGP("parse_result:%d; error parsing packet: %s\n",
+		       result, *error);
+	}
+
+	assert(!"should not be reached");
+	return STATUS_ERR;	/* not reached */
 }
 
 int netdev_receive_loop(struct packet_socket *psock,
