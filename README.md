@@ -35,6 +35,16 @@ cd packetdrill/gtests/net/packetdrill
 make
 ```
 
+To build with PSP support, recursively clone the ynl-c submodule and
+pass `ENABLE_PSP=1` to make:
+
+```
+git clone --recurse-submodules https://github.com/google/packetdrill.git
+cd packetdrill/gtests/net/packetdrill
+./configure
+make ENABLE_PSP=1
+```
+
 # How To Run All Local Tests for Linux
 
 If you are on a machine with a recent Linux kernel you can su to root and
